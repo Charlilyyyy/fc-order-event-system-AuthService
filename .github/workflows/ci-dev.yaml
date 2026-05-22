@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
   push:
     branches:
       - dev
@@ -137,7 +138,7 @@ jobs:
   build:
     name: Build image (PR)
     if: github.event_name == 'pull_request'
-    needs: [lint, test-unit, test-feature, sonarqube, trivy, blackduck]
+    needs: trivy
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
