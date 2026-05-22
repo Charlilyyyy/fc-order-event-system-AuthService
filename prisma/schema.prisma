@@ -1,0 +1,520 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum UserStatus {
+  pending
+  active
+  suspended
+  deleted
+}
+
+enum CredentialType {
+  password
+  passkey
+  oauth
+  saml
+  ldap
+}
+
+enum MfaType {
+  totp
+  sms
+  email
+  webauthn
+}
+
+enum TokenPurpose {
+  email_verify
+  password_reset
+  magic_link
+  invite
+}
+
+enum AuditAction {
+  login_success
+  login_failure
+  logout
+  password_change
+  mfa_enroll
+  mfa_verify
+  token_refresh
+  account_locked
+  email_verified
+  oauth_linked
+  role_assigned
+  session_revoked
+}
+
+// =============================================================================
+// 1. CORE IDENTITY
+// =============================================================================
+
+model User {
+  id                String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email             String     @unique @db.Citext
+  emailVerified     Boolean    @default(false) @map("email_verified")
+  emailVerifiedAt   DateTime?  @map("email_verified_at") @db.Timestamptz(6)
+  phone             String?
+  phoneVerified     Boolean    @default(false) @map("phone_verified")
+  status            UserStatus @default(pending)
+  passwordChangedAt DateTime?  @map("password_changed_at") @db.Timestamptz(6)
+  lastLoginAt       DateTime?  @map("last_login_at") @db.Timestamptz(6)
+  lastLoginIp       String?    @map("last_login_ip") @db.Inet
+  failedLoginCount  Int        @default(0) @map("failed_login_count")
+  lockedUntil       DateTime?  @map("locked_until") @db.Timestamptz(6)
+  locale            String?    @default("en")
+  timezone          String?    @default("UTC")
+  metadata          Json       @default("{}")
+  createdAt         DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt         DateTime?  @map("deleted_at") @db.Timestamptz(6)
+
+  profile                    UserProfile?
+  credentials                Credential[]
+  identities                 Identity[]
+  verificationTokens         VerificationToken[]
+  sessions                   Session[]
+  refreshTokens              RefreshToken[]
+  apiKeys                    ApiKey[]
+  mfaFactors                 MfaFactor[]
+  mfaBackupCodes             MfaBackupCode[]
+  organizationMembers        OrganizationMember[]
+  organizationMembersInvited OrganizationMember[]     @relation("OrgMemberInviter")
+  userRoles                  UserRole[]
+  grantedUserRoles           UserRole[]               @relation("UserRoleGrantor")
+  invitationsSent            Invitation[]             @relation("InvitationInviter")
+  invitationsAccepted        Invitation[]             @relation("InvitationAccepter")
+  accountDeletionRequests    AccountDeletionRequest[]
+  userConsents               UserConsent[]
+  authEvents                 AuthEvent[]
+  trustedDevices             TrustedDevice[]
+  oauthAuthorizationCodes    OauthAuthorizationCode[]
+
+  @@index([status], map: "idx_users_status")
+  @@map("users")
+}
+
+model UserProfile {
+  userId      String    @id @map("user_id") @db.Uuid
+  displayName String?   @map("display_name")
+  firstName   String?   @map("first_name")
+  lastName    String?   @map("last_name")
+  avatarUrl   String?   @map("avatar_url")
+  bio         String?
+  dateOfBirth DateTime? @map("date_of_birth") @db.Date
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+// =============================================================================
+// 2. CREDENTIALS
+// =============================================================================
+
+model Credential {
+  id         String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String         @map("user_id") @db.Uuid
+  type       CredentialType
+  identifier String?
+  secretHash String?        @map("secret_hash")
+  publicKey  String?        @map("public_key")
+  provider   String?
+  signCount  BigInt?        @map("sign_count")
+  isPrimary  Boolean        @default(false) @map("is_primary")
+  lastUsedAt DateTime?      @map("last_used_at") @db.Timestamptz(6)
+  expiresAt  DateTime?      @map("expires_at") @db.Timestamptz(6)
+  createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type, identifier])
+  @@index([userId], map: "idx_credentials_user_id")
+  @@map("credentials")
+}
+
+model Identity {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId                String    @map("user_id") @db.Uuid
+  provider              String
+  providerUserId        String    @map("provider_user_id")
+  email                 String?   @db.Citext
+  accessTokenEncrypted  Bytes?    @map("access_token_encrypted")
+  refreshTokenEncrypted Bytes?    @map("refresh_token_encrypted")
+  tokenExpiresAt        DateTime? @map("token_expires_at") @db.Timestamptz(6)
+  profileData           Json      @default("{}") @map("profile_data")
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId], map: "idx_identities_user_id")
+  @@map("identities")
+}
+
+// =============================================================================
+// 3. ONE-TIME TOKENS
+// =============================================================================
+
+model VerificationToken {
+  id         String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String?      @map("user_id") @db.Uuid
+  email      String?      @db.Citext
+  purpose    TokenPurpose
+  tokenHash  String       @unique @map("token_hash")
+  expiresAt  DateTime     @map("expires_at") @db.Timestamptz(6)
+  consumedAt DateTime?    @map("consumed_at") @db.Timestamptz(6)
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose], map: "idx_verification_tokens_user_purpose")
+  @@map("verification_tokens")
+}
+
+// =============================================================================
+// 4. SESSIONS & TOKENS
+// =============================================================================
+
+model Session {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  sessionTokenHash String    @unique @map("session_token_hash")
+  userAgent        String?   @map("user_agent")
+  ipAddress        String?   @map("ip_address") @db.Inet
+  deviceLabel      String?   @map("device_label")
+  isRememberMe     Boolean   @default(false) @map("is_remember_me")
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz(6)
+  lastActiveAt     DateTime  @default(now()) @map("last_active_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([userId], map: "idx_sessions_user_active")
+  @@map("sessions")
+}
+
+model RefreshToken {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  sessionId    String?   @map("session_id") @db.Uuid
+  tokenHash    String    @unique @map("token_hash")
+  familyId     String    @map("family_id") @db.Uuid
+  replacedById String?   @unique @map("replaced_by_id") @db.Uuid
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session    Session?      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  replacedBy RefreshToken? @relation("RefreshTokenReplacement", fields: [replacedById], references: [id])
+  replaces   RefreshToken? @relation("RefreshTokenReplacement")
+
+  @@index([userId], map: "idx_refresh_tokens_user")
+  @@index([familyId], map: "idx_refresh_tokens_family")
+  @@map("refresh_tokens")
+}
+
+model RevokedToken {
+  jti       String   @id
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  revokedAt DateTime @default(now()) @map("revoked_at") @db.Timestamptz(6)
+
+  @@index([expiresAt], map: "idx_revoked_tokens_expires")
+  @@map("revoked_tokens")
+}
+
+model ApiKey {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  name       String
+  keyPrefix  String    @map("key_prefix")
+  keyHash    String    @unique @map("key_hash")
+  scopes     String[]  @default([])
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(6)
+  expiresAt  DateTime? @map("expires_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([keyPrefix], map: "idx_api_keys_prefix")
+  @@map("api_keys")
+}
+
+// =============================================================================
+// 5. MFA
+// =============================================================================
+
+model MfaFactor {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  type            MfaType
+  name            String?
+  secretEncrypted Bytes?    @map("secret_encrypted")
+  credentialId    String?   @map("credential_id")
+  publicKey       String?   @map("public_key")
+  signCount       BigInt?   @map("sign_count")
+  isVerified      Boolean   @default(false) @map("is_verified")
+  isPrimary       Boolean   @default(false) @map("is_primary")
+  lastUsedAt      DateTime? @map("last_used_at") @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type, name])
+  @@map("mfa_factors")
+}
+
+model MfaBackupCode {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  codeHash  String    @map("code_hash")
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("mfa_backup_codes")
+}
+
+// =============================================================================
+// 6. AUTHORIZATION (RBAC + multi-tenant)
+// =============================================================================
+
+model Organization {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug      String   @unique
+  name      String
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  members     OrganizationMember[]
+  userRoles   UserRole[]
+  invitations Invitation[]
+
+  @@map("organizations")
+}
+
+model OrganizationMember {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  role           String   @default("member")
+  invitedById    String?  @map("invited_by") @db.Uuid
+  joinedAt       DateTime @default(now()) @map("joined_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy    User?        @relation("OrgMemberInviter", fields: [invitedById], references: [id])
+
+  @@unique([organizationId, userId])
+  @@map("organization_members")
+}
+
+model Role {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String   @unique
+  description String?
+  isSystem    Boolean  @default(false) @map("is_system")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  resource    String
+  action      String
+  description String?
+
+  rolePermissions RolePermission[]
+
+  @@unique([resource, action])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @map("role_id") @db.Uuid
+  permissionId String @map("permission_id") @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// Prisma requires all @@id fields to be non-null; global roles use organizationId = nil UUID.
+model UserRole {
+  userId         String   @map("user_id") @db.Uuid
+  roleId         String   @map("role_id") @db.Uuid
+  organizationId String   @default("00000000-0000-0000-0000-000000000000") @map("organization_id") @db.Uuid
+  grantedById    String?  @map("granted_by") @db.Uuid
+  grantedAt      DateTime @default(now()) @map("granted_at") @db.Timestamptz(6)
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  grantor      User?        @relation("UserRoleGrantor", fields: [grantedById], references: [id])
+
+  @@id([userId, roleId, organizationId])
+  @@map("user_roles")
+}
+
+// =============================================================================
+// 7. INVITATIONS & ACCOUNT LIFECYCLE
+// =============================================================================
+
+model Invitation {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String?   @map("organization_id") @db.Uuid
+  email          String    @db.Citext
+  role           String    @default("member")
+  tokenHash      String    @unique @map("token_hash")
+  invitedById    String    @map("invited_by") @db.Uuid
+  acceptedById   String?   @map("accepted_by") @db.Uuid
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz(6)
+  acceptedAt     DateTime? @map("accepted_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedBy    User          @relation("InvitationInviter", fields: [invitedById], references: [id])
+  acceptedBy   User?         @relation("InvitationAccepter", fields: [acceptedById], references: [id])
+
+  @@map("invitations")
+}
+
+model AccountDeletionRequest {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  scheduledFor DateTime  @map("scheduled_for") @db.Timestamptz(6)
+  reason       String?
+  cancelledAt  DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  completedAt  DateTime? @map("completed_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("account_deletion_requests")
+}
+
+model UserConsent {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  consentType String   @map("consent_type")
+  version     String
+  granted     Boolean
+  ipAddress   String?  @map("ip_address") @db.Inet
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_consents")
+}
+
+// =============================================================================
+// 8. SECURITY & AUDIT
+// =============================================================================
+
+model AuthEvent {
+  id        String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String?     @map("user_id") @db.Uuid
+  action    AuditAction
+  success   Boolean
+  ipAddress String?     @map("ip_address") @db.Inet
+  userAgent String?     @map("user_agent")
+  metadata  Json        @default("{}")
+  createdAt DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)], map: "idx_auth_events_user_created")
+  @@index([ipAddress, createdAt(sort: Desc)], map: "idx_auth_events_ip_created")
+  @@map("auth_events")
+}
+
+model TrustedDevice {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  deviceFingerprint String    @map("device_fingerprint")
+  label             String?
+  lastSeenAt        DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  expiresAt         DateTime? @map("expires_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceFingerprint])
+  @@map("trusted_devices")
+}
+
+model LoginAttempt {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  identifier    String   @db.Citext
+  ipAddress     String?  @map("ip_address") @db.Inet
+  success       Boolean
+  failureReason String?  @map("failure_reason")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([identifier, createdAt(sort: Desc)], map: "idx_login_attempts_identifier_created")
+  @@map("login_attempts")
+}
+
+// =============================================================================
+// 9. OAUTH SERVER (optional IdP)
+// =============================================================================
+
+model OauthClient {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientId         String   @unique @map("client_id")
+  clientSecretHash String?  @map("client_secret_hash")
+  name             String
+  redirectUris     String[] @map("redirect_uris")
+  grantTypes       String[] @default(["authorization_code", "refresh_token"]) @map("grant_types")
+  scopes           String[] @default([])
+  isConfidential   Boolean  @default(true) @map("is_confidential")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  authorizationCodes OauthAuthorizationCode[]
+
+  @@map("oauth_clients")
+}
+
+model OauthAuthorizationCode {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientId      String    @map("client_id") @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  codeHash      String    @unique @map("code_hash")
+  redirectUri   String    @map("redirect_uri")
+  scopes        String[]
+  codeChallenge String?   @map("code_challenge")
+  expiresAt     DateTime  @map("expires_at") @db.Timestamptz(6)
+  consumedAt    DateTime? @map("consumed_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  client OauthClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("oauth_authorization_codes")
+}

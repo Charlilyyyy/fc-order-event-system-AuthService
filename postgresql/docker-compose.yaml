@@ -1,0 +1,17 @@
+# version: '3.8'
+services:
+  postgres:
+    image: postgres:16
+    container_name: fc-order-event-system-auth_postgres_container
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - ${POSTGRES_HOST_PORT}:${POSTGRES_CONTAINER_PORT}
+    volumes:
+      - fc-order-event-system-auth_postgres_container:/var/lib/postgresql/data
+    restart: always
+
+volumes:
+  fc-order-event-system-auth_postgres_container:

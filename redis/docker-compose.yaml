@@ -1,0 +1,38 @@
+# version: '3.8'
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: fc-order-event-system-auth_redis_container
+    env_file:
+      - .env
+    ports:
+      - ${REDIS_HOST_PORT}:${REDIS_CONTAINER_PORT}
+    volumes:
+      - fc-order-event-system-auth_redis_container:/data
+    restart: always
+    # ACL: disable default user, enable custom user + password (Redis 6+)
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --user
+      - default
+      - off
+      - --user
+      - ${REDIS_USERNAME}
+      - on
+      - ">${REDIS_PASSWORD}"
+      - "~*"
+      - "+@all"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'redis-cli --user "$$REDIS_USERNAME" --pass "$$REDIS_PASSWORD" ping | grep -q PONG',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  fc-order-event-system-auth_redis_container:
