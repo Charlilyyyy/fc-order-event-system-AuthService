@@ -1,0 +1,14 @@
+title = "gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "CI and test-only placeholders (not production secrets)"
+paths = [
+  '''\.github/workflows/ci-dev\.yaml''',
+  '''src/vitest\.setup\.ts''',
+]
+regexes = [
+  '''test-jwt-secret-at-least-32-characters-long''',
+]
