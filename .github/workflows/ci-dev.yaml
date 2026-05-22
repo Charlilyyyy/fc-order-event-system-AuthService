@@ -24,14 +24,14 @@ jobs:
           context: .
           file: ./Dockerfile
           push: false
-          tags: fc-order-event-system-AuthService:pr-${{ github.event.pull_request.number }}
+          tags: fc-order-event-system-authservice:pr-${{ github.event.pull_request.number }}
 
   build-and-push:
     name: Build and push image (dev)
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     env:
-      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/fc-order-event-system-AuthService
+      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/fc-order-event-system-authservice
     steps:
       - name: Checkout
         uses: actions/checkout@v4
