@@ -1,0 +1,18 @@
+part 1 :
+
+- database - done
+- login
+- signup
+- forgot password
+- sso signup if have
+
+- api hit have middileware :
+    - ratelimitter
+    - token to hit the api ( or x_api_key )
+
+part 2 : 
+
+- after all done , instead of direct request to email , do kafka event . then mail server will consume from it
+    - reset password
+    - signup normal ( need to make sure cannot just auto create and push kafka events , bcs people can just use someone else account , that does not mean email has been used )
+    - signup sso need ?

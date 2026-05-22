@@ -1,0 +1,14 @@
+services:
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-3001}:3001"
+    environment:
+      PORT: 3001
+      NODE_ENV: production
+      SERVICE_NAME: auth-service
+    env_file:
+      - path: .env
+        required: false
