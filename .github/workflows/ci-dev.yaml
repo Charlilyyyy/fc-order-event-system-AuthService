@@ -2,14 +2,143 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
   push:
     branches:
       - dev
 
+env:
+  NODE_ENV: test
+  PORT: "3001"
+  SERVICE_NAME: auth-service
+  JWT_SECRET: test-jwt-secret-at-least-32-characters-long
+  JWT_EXPIRES_IN: 1h
+  DATABASE_URL: postgresql://user:password@localhost:5432/test?schema=public
+
 jobs:
+  gitleaks:
+    name: Gitleaks (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  lint:
+    name: Lint (PR)
+    if: github.event_name == 'pull_request'
+    needs: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+  test-unit:
+    name: Unit tests (PR)
+    if: github.event_name == 'pull_request'
+    needs: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+  test-feature:
+    name: Feature tests (PR)
+    if: github.event_name == 'pull_request'
+    needs: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run feature tests
+        run: npm run test:feature
+
+  sonarqube:
+    name: SonarQube (PR)
+    if: github.event_name == 'pull_request'
+    needs: [lint, test-unit, test-feature]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  trivy:
+    name: Trivy (PR)
+    if: github.event_name == 'pull_request'
+    needs: sonarqube
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trivy - dependency scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Trivy - Dockerfile scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          exit-code: "1"
+          severity: CRITICAL,HIGH,MEDIUM
+
   build:
     name: Build image (PR)
     if: github.event_name == 'pull_request'
+    needs: trivy
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
